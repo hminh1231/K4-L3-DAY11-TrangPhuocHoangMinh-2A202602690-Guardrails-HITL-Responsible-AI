@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VinBank Chat</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="phone">
+    <header class="top">
+      <div class="brand">
+        <span class="mark" aria-hidden="true">V</span>
+        <div>
+          <strong>VinBank</strong>
+          <span id="agent-hint">Trợ lý có guardrail</span>
+        </div>
+      </div>
+      <div class="switch" role="tablist" aria-label="Chọn agent">
+        <button type="button" class="tab active" data-agent="blue" role="tab" aria-selected="true">Blue</button>
+        <button type="button" class="tab" data-agent="red_default" role="tab" aria-selected="false">Red</button>
+        <button type="button" class="tab" data-agent="red_advance" role="tab" aria-selected="false">Red Advance</button>
+      </div>
+    </header>
+
+    <div class="thread" id="thread" aria-live="polite"></div>
+
+    <form class="composer" id="composer">
+      <label class="sr" for="box">Tin nhắn</label>
+      <textarea id="box" rows="1" placeholder="Nhắn cho VinBank…"></textarea>
+      <button type="submit" id="send">Gửi</button>
+    </form>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

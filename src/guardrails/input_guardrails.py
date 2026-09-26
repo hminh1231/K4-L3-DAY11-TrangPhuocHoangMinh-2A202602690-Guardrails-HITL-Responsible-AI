@@ -11,6 +11,7 @@ Status convention (không dùng True/False mơ hồ):
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Literal
 
 from google.genai import types
@@ -18,6 +19,90 @@ from google.adk.plugins import base_plugin
 from google.adk.agents.invocation_context import InvocationContext
 
 from core.config import ALLOWED_TOPICS, BLOCKED_TOPICS
+
+# Invisible separators used to hide jailbreak tokens (ZWSP, ZWNJ, ZWJ, BOM, WJ).
+_INVISIBLE = dict.fromkeys(map(ord, "\u200b\u200c\u200d\ufeff\u2060\u00ad"), None)
+
+_INJECTION_PATTERNS = [
+    r"ignore\s*(?:all\s*)?(?:previous|above|prior)\s*instructions?",
+    r"you\s*are\s*now",
+    r"system\s*prompt",
+    r"reveal\s*(?:your\s*)?(?:system\s*)?(?:instructions|prompt)",
+    r"pretend\s*(?:you\s*are|to\s*be)",
+    r"act\s*as\s*(?:(?:a|an)\s*)?unrestricted",
+    r"\bdan\b",
+    r"role\s*play",
+    r"dong\s*vai",
+    r"bo\s*qua\s*(?:moi\s*)?huong\s*dan",
+    r"quen\s*(?:moi\s*)?huong\s*dan",
+    r"tiet\s*lo",
+    r"mat\s*khau",
+    r"\bpassword\b",
+    r"api\s*key",
+    r"\bcredential\b",
+    r"\binternal\b",
+    r"\bsecret\b",
+    r"co\s*so\s*du\s*lieu",
+    r"\bdatabase\b",
+    r"admin\s*password",
+]
+
+# Asked for even when the sentence also contains a banking word.
+_EXTRACTIVE_PATTERNS = [
+    r"\bpassword\b",
+    r"mat\s*khau",
+    r"api\s*key",
+    r"\bcredential\b",
+    r"\bsecret\b",
+    r"\binternal\b",
+    r"system\s*prompt",
+    r"co\s*so\s*du\s*lieu",
+    r"\bdatabase\b",
+    r"\bdan\b",
+    r"dong\s*vai",
+    r"admin\s*password",
+]
+
+# Everyday banking phrases that are not in the shared topic list.
+_EXTRA_BANKING = (
+    "chuyen khoan",
+    "rut tien",
+    "gui tien",
+    "sao ke",
+    "phi",
+    "khach hang",
+    "dich vu",
+    "mo the",
+    "khoa the",
+)
+
+# Greeting and "what can you do" words. A message made only of these is allowed.
+_SMALLTALK_WORDS = frozenset({
+    "xin", "chao", "hello", "hi", "hey", "gioi", "thieu", "cam", "on",
+    "thanks", "thank", "you", "tam", "biet", "bye", "help", "who", "are",
+    "what", "can", "do", "please", "cho", "toi", "ban", "co", "the", "lam",
+    "gi", "mot", "va", "nhe", "voi", "duoc", "nhung", "nao", "cua", "la",
+    "ai", "ten", "minh", "a", "oi", "giup", "khong", "ve", "than", "tu",
+    "nha", "di", "vui", "long", "me", "your", "my", "to", "how", "i", "am",
+    "khoe", "nhieu", "nhe", "ok", "okay", "vang", "da", "uh", "um",
+})
+
+
+def _is_smalltalk(folded: str) -> bool:
+    words = re.findall(r"[a-z0-9]+", folded)
+    return bool(words) and all(word in _SMALLTALK_WORDS for word in words)
+
+
+def _normalize_for_match(text: str) -> str:
+    """NFKC + strip invisible characters so hidden injections still match."""
+    normalized = unicodedata.normalize("NFKC", text or "")
+    return normalized.translate(_INVISIBLE)
+
+
+def _fold_accents(text: str) -> str:
+    """Lowercase and drop combining marks so 'tài khoản' matches 'tai khoan'."""
+    folded = unicodedata.normalize("NFD", _normalize_for_match(text).lower())
+    return "".join(ch for ch in folded if unicodedata.category(ch) != "Mn")
 
 # Quyết định rõ ràng — tránh đảo nghĩa True/False
 InputStatus = Literal["ALLOW", "BLOCK"]
@@ -51,14 +136,9 @@ def detect_injection(user_input: str) -> InputStatus:
     Returns:
         ``"BLOCK"`` if injection detected (chặn), ``"ALLOW"`` otherwise (cho qua).
     """
-    INJECTION_PATTERNS = [
-        # TODO: Add at least 5 regex patterns
-        # Example:
-        # r"ignore (all )?(previous|above) instructions",
-    ]
-
-    for pattern in INJECTION_PATTERNS:
-        if re.search(pattern, user_input, re.IGNORECASE):
+    folded = _fold_accents(user_input)
+    for pattern in _INJECTION_PATTERNS:
+        if re.search(pattern, folded, re.IGNORECASE):
             return "BLOCK"
     return "ALLOW"
 
@@ -84,14 +164,31 @@ def topic_filter(user_input: str) -> InputStatus:
         ``"BLOCK"`` = chặn (off-topic hoặc topic cấm).
         ``"ALLOW"`` = cho qua (câu banking hợp lệ).
     """
-    input_lower = user_input.lower()
+    folded = _fold_accents(user_input)
+    # "vậy" folds to "vay". Only an unaccented "vay" counts as the loan topic.
+    plain = _normalize_for_match(user_input).lower()
 
-    # TODO: Implement logic:
-    # 1. If input contains any blocked topic -> return "BLOCK"
-    # 2. If input doesn't contain any allowed topic -> return "BLOCK"
-    # 3. Otherwise -> return "ALLOW"
+    for topic in BLOCKED_TOPICS:
+        if re.search(rf"\b{re.escape(topic)}\b", folded):
+            return "BLOCK"
 
-    pass  # Replace with your implementation
+    for pattern in _EXTRACTIVE_PATTERNS:
+        if re.search(pattern, folded, re.IGNORECASE):
+            return "BLOCK"
+
+    for topic in ALLOWED_TOPICS:
+        haystack = plain if topic == "vay" else folded
+        if re.search(rf"\b{re.escape(topic)}\b", haystack):
+            return "ALLOW"
+
+    for phrase in _EXTRA_BANKING:
+        if re.search(rf"\b{re.escape(phrase)}\b", folded):
+            return "ALLOW"
+
+    if _is_smalltalk(folded):
+        return "ALLOW"
+
+    return "BLOCK"
 
 
 # ============================================================
@@ -144,14 +241,20 @@ class InputGuardrailPlugin(base_plugin.BasePlugin):
         self.total_count += 1
         text = self._extract_text(user_message)
 
-        # TODO: Implement logic:
-        # 1. Call detect_injection(text)
-        #    - If "BLOCK": increment blocked_count, return self._block_response("...")
-        # 2. Call topic_filter(text)
-        #    - If "BLOCK": increment blocked_count, return self._block_response("...")
-        # 3. If both return "ALLOW": return None (let message through)
+        if detect_injection(text) == "BLOCK":
+            self.blocked_count += 1
+            return self._block_response(
+                "Request blocked: potential prompt injection detected. "
+                "I only help with VinBank banking questions."
+            )
 
-        pass  # Replace with your implementation
+        if topic_filter(text) == "BLOCK":
+            self.blocked_count += 1
+            return self._block_response(
+                "Request blocked: this is outside VinBank banking topics."
+            )
+
+        return None
 
 
 # ============================================================
